@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Parcel Tracker</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { background-color: #212529; color: #f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .dashboard-card {
+            background: #2b3035;
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            padding: 2rem;
+            text-align: center;
+            margin-bottom: 2rem;
+            border: 1px solid #495057;
+        }
+        .stat-number { font-size: 4rem; font-weight: bold; color: #6ea8fe; }
+        .stat-label { font-size: 1.2rem; color: #adb5bd; }
+        #map { height: 400px; width: 100%; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .progress { height: 30px; border-radius: 15px; margin-top: 1rem; background-color: #495057; }
+
+        @media (max-width: 768px) {
+            .stat-number { font-size: 2.5rem; }
+            .dashboard-card { padding: 1.5rem; margin-bottom: 1.5rem; }
+            h1 { font-size: 1.75rem; }
+            #map { height: 300px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container py-3 py-md-5">
+        <div class="d-flex justify-content-end mb-3">
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#configModal">
+                ⚙️ Settings
+            </button>
+        </div>
+        <h1 class="text-center mb-3 mb-md-5">📦 bpost Parcel Tracker</h1>
+        
+        <div class="row">
+            <!-- Stats Column -->
+            <div class="col-md-4">
+                <div class="dashboard-card">
+                    <div class="stat-number" id="stops-count">--</div>
+                    <div class="stat-label">Stops Away</div>
+                </div>
+                
+                <div class="dashboard-card">
+                    <div class="stat-number" id="eta-minutes">--</div>
+                    <div class="stat-label">Estimated Minutes</div>
+                </div>
+
+                <div class="dashboard-card">
+                    <h5>Delivery Progress</h5>
+                    <div class="progress">
+                        <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%">0%</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Map Column -->
+            <div class="col-md-8">
+                <div id="map"></div>
+            </div>
+        </div>
+        
+        <div class="text-center mt-3 text-secondary">
+            <span id="update-frequency">Auto-updates every 5 minutes</span>. Last update: <span id="last-updated">Never</span>
+        </div>
+    </div>
+
+    <!-- Configuration Modal -->
+    <div class="modal fade" id="configModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title">Tracking Settings</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="configForm">
+                        <div class="mb-3">
+                            <label for="itemId" class="form-label">Item ID / Barcode</label>
+                            <input type="text" class="form-control bg-secondary text-light border-secondary" id="itemId" required value="{{ config.item_id }}">
+                        </div>
+                        <div class="mb-3">
+                            <label for="postalCode" class="form-label">Postal Code</label>
+                            <input type="text" class="form-control bg-secondary text-light border-secondary" id="postalCode" required value="{{ config.postal_code }}">
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" onclick="saveConfig()">Save changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Initialize Map
+        const map = L.map('map').setView([51.13, 4.27], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        let driverMarker = null;
+        let userMarker = null;
+        let routeLine = null;
+
+        // Custom Icons
+        const truckIcon = L.icon({
+            iconUrl: 'https://cdn-icons-png.flaticon.com/512/713/713311.png', // Simple truck icon
+            iconSize: [40, 40],
+            iconAnchor: [20, 20],
+        });
+
+        const homeIcon = L.icon({
+            iconUrl: 'https://cdn-icons-png.flaticon.com/512/25/25694.png', // Simple home icon
+            iconSize: [30, 30],
+            iconAnchor: [15, 30],
+        });
+
+        async function saveConfig() {
+            const itemId = document.getElementById('itemId').value;
+            const postalCode = document.getElementById('postalCode').value;
+            
+            try {
+                const response = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_id: itemId, postal_code: postalCode })
+                });
+                
+                if (response.ok) {
+                    // Close modal using Bootstrap 5 API
+                    const modalEl = document.getElementById('configModal');
+                    const modal = bootstrap.Modal.getInstance(modalEl);
+                    modal.hide();
+                    
+                    // Refresh data
+                    updateDashboard();
+                    alert('Tracking settings updated!');
+                } else {
+                    alert('Failed to update settings');
+                }
+            } catch (e) {
+                console.error(e);
+                alert('Error updating settings');
+            }
+        }
+
+        async function updateDashboard() {
+            let nextInterval = 300000; // Default 5 minutes
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+
+                if (data.error) {
+                    console.error('API Error:', data.error);
+                } else {
+                    // Update Stats
+                    const stops = data.stops_remaining;
+                    document.getElementById('stops-count').innerText = stops;
+                    document.getElementById('eta-minutes').innerText = `~${data.eta_minutes}`;
+                    
+                    const progressBar = document.getElementById('progress-bar');
+                    const progressVal = Math.round(data.progress_percent);
+                    progressBar.style.width = `${progressVal}%`;
+                    progressBar.innerText = `${progressVal}%`;
+                    
+                    document.getElementById('last-updated').innerText = new Date().toLocaleTimeString();
+
+                    // Dynamic interval and status logic
+                    if (stops > 0 && stops < 10) {
+                        nextInterval = 60000; // 1 minute
+                        document.getElementById('update-frequency').innerText = "Auto-updates every 1 minute (Package is close!)";
+                    } else {
+                        nextInterval = 300000; // 5 minutes (default or delivered)
+                        if (stops === 0) {
+                            document.getElementById('stops-count').innerText = "Delivered";
+                            document.getElementById('eta-minutes').innerText = "Arrived";
+                            document.getElementById('update-frequency').innerText = "Package delivered. Auto-updates every 5 minutes.";
+                        } else {
+                            document.getElementById('update-frequency').innerText = "Auto-updates every 5 minutes";
+                        }
+                    }
+
+                    // Update Map
+                    if (data.driver_location && data.user_location) {
+                        const driverLat = data.driver_location.lat;
+                        const driverLng = data.driver_location.lng;
+                        const userLat = data.user_location.lat;
+                        const userLng = data.user_location.lng;
+
+                        // Driver Marker
+                        if (driverMarker) map.removeLayer(driverMarker);
+                        driverMarker = L.marker([driverLat, driverLng], {icon: truckIcon}).addTo(map)
+                            .bindPopup("Driver Location").openPopup();
+
+                        // User Marker
+                        if (userMarker) map.removeLayer(userMarker);
+                        userMarker = L.marker([userLat, userLng], {icon: homeIcon}).addTo(map)
+                            .bindPopup("Your Location");
+
+                        // Route Line
+                        if (routeLine) map.removeLayer(routeLine);
+                        routeLine = L.polyline([[driverLat, driverLng], [userLat, userLng]], {color: 'blue', dashArray: '10, 10'}).addTo(map);
+
+                        // Fit bounds to show both points
+                        const bounds = L.latLngBounds([
+                            [driverLat, driverLng],
+                            [userLat, userLng]
+                        ]);
+                        map.fitBounds(bounds, {padding: [50, 50]});
+                    }
+                }
+            } catch (error) {
+                console.error('Fetch error:', error);
+            } finally {
+                // Schedule next update
+                setTimeout(updateDashboard, nextInterval);
+            }
+        }
+
+        // Initial Load
+        updateDashboard();
+    </script>
+</body>
+</html>

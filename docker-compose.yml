@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  bpost-predictor:
+    build: .
+    container_name: bpost-predictor
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./config.json:/app/config.json
+      - ./app.log:/app/app.log
+    restart: unless-stopped
